@@ -1,0 +1,30 @@
+{
+  "demo_settings": {
+    "default_model": "lightgbm",
+    "fraud_threshold": 0.5,
+    "max_batch_size": 10000,
+    "enable_explanations": true
+  },
+  "model_settings": {
+    "available_models": [
+      "lightgbm",
+      "xgboost",
+      "random_forest",
+      "catboost",
+      "logistic"
+    ],
+    "model_refresh_interval": 3600,
+    "fallback_model": "random_forest"
+  },
+  "ui_settings": {
+    "default_page": "Dashboard Overview",
+    "enable_advanced_features": true,
+    "max_display_rows": 1000
+  },
+  "business_settings": {
+    "average_transaction_value": 150.0,
+    "investigation_cost": 25.0,
+    "chargeback_cost": 75.0,
+    "system_cost_monthly": 50000.0
+  }
+}

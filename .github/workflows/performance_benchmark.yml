@@ -1,0 +1,313 @@
+name: Performance Benchmark
+
+on:
+  push:
+    branches: [ master, main ]
+  pull_request:
+    branches: [ master, main ]
+  schedule:
+    # Run daily at 2 AM UTC
+    - cron: '0 2 * * *'
+  workflow_dispatch:
+    inputs:
+      benchmark_mode:
+        description: 'Benchmark mode to run'
+        required: true
+        default: 'quick'
+        type: choice
+        options:
+        - quick
+        - full
+        - auto
+      dataset_size:
+        description: 'Size of test dataset'
+        required: false
+        default: '10000'
+        type: string
+
+env:
+  BENCHMARK_OUTPUT_DIR: benchmark_results
+  VISUALIZATION_OUTPUT_DIR: benchmark_visualizations
+
+jobs:
+  benchmark:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    
+    strategy:
+      matrix:
+        python-version: [3.9]
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+      with:
+        fetch-depth: 0
+    
+    - name: Set up Python ${{ matrix.python-version }}
+      uses: actions/setup-python@v4
+      with:
+        python-version: ${{ matrix.python-version }}
+    
+    - name: Cache pip dependencies
+      uses: actions/cache@v3
+      with:
+        path: ~/.cache/pip
+        key: ${{ runner.os }}-pip-${{ hashFiles('**/requirements.txt') }}
+        restore-keys: |
+          ${{ runner.os }}-pip-
+    
+    - name: Install system dependencies
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y build-essential
+    
+    - name: Install Python dependencies
+      run: |
+        python -m pip install --upgrade pip
+        pip install -r requirements.txt
+        pip install schedule pyyaml requests
+    
+    - name: Create sample dataset
+      run: |
+        python run_benchmark.py create-data --data sample_data.csv --size ${{ github.event.inputs.dataset_size || '10000' }}
+    
+    - name: Run performance benchmark
+      run: |
+        benchmark_mode="${{ github.event.inputs.benchmark_mode || 'quick' }}"
+        
+        if [ "$benchmark_mode" = "auto" ]; then
+          python run_benchmark.py auto --config benchmark_config.yaml --data sample_data.csv --verbose
+        elif [ "$benchmark_mode" = "full" ]; then
+          python run_benchmark.py full --data sample_data.csv --output ${{ env.BENCHMARK_OUTPUT_DIR }} --verbose
+        else
+          python run_benchmark.py quick --data sample_data.csv --output ${{ env.BENCHMARK_OUTPUT_DIR }} --verbose
+        fi
+      env:
+        GITHUB_SHA: ${{ github.sha }}
+        GITHUB_REF_NAME: ${{ github.ref_name }}
+        GITHUB_RUN_NUMBER: ${{ github.run_number }}
+    
+    - name: Generate visualizations
+      if: always()
+      run: |
+        # Find the most recent results file
+        results_file=$(find ${{ env.BENCHMARK_OUTPUT_DIR }} -name "benchmark_results_*.json" -type f -printf '%T@ %p\n' | sort -n | tail -1 | cut -d' ' -f2-)
+        
+        if [ -n "$results_file" ] && [ -f "$results_file" ]; then
+          echo "Generating visualizations from: $results_file"
+          python run_benchmark.py visualize --results "$results_file" --output ${{ env.VISUALIZATION_OUTPUT_DIR }}
+        else
+          echo "No benchmark results file found"
+          ls -la ${{ env.BENCHMARK_OUTPUT_DIR }}/ || echo "Benchmark output directory not found"
+        fi
+    
+    - name: Check for performance regressions
+      id: regression_check
+      if: always()
+      run: |
+        # Check if CI/CD summary exists and contains regressions
+        if [ -f "${{ env.BENCHMARK_OUTPUT_DIR }}/ci_cd_summary.txt" ]; then
+          echo "=== Benchmark Summary ==="
+          cat "${{ env.BENCHMARK_OUTPUT_DIR }}/ci_cd_summary.txt"
+          
+          # Check for regressions
+          if grep -q "Regressions Detected:" "${{ env.BENCHMARK_OUTPUT_DIR }}/ci_cd_summary.txt"; then
+            echo "regression_detected=true" >> $GITHUB_OUTPUT
+            echo "::warning::Performance regressions detected!"
+          else
+            echo "regression_detected=false" >> $GITHUB_OUTPUT
+          fi
+          
+          # Check for violations
+          if grep -q "Performance Violations:" "${{ env.BENCHMARK_OUTPUT_DIR }}/ci_cd_summary.txt"; then
+            echo "violations_detected=true" >> $GITHUB_OUTPUT
+            echo "::warning::Performance threshold violations detected!"
+          else
+            echo "violations_detected=false" >> $GITHUB_OUTPUT
+          fi
+        else
+          echo "No CI/CD summary found"
+          echo "regression_detected=false" >> $GITHUB_OUTPUT
+          echo "violations_detected=false" >> $GITHUB_OUTPUT
+        fi
+    
+    - name: Upload benchmark results
+      if: always()
+      uses: actions/upload-artifact@v3
+      with:
+        name: benchmark-results-${{ github.run_number }}
+        path: |
+          ${{ env.BENCHMARK_OUTPUT_DIR }}/
+          ${{ env.VISUALIZATION_OUTPUT_DIR }}/
+        retention-days: 30
+    
+    - name: Generate performance report comment
+      if: github.event_name == 'pull_request'
+      uses: actions/github-script@v6
+      with:
+        script: |
+          const fs = require('fs');
+          const path = require('path');
+          
+          // Read CI/CD summary if available
+          const summaryPath = '${{ env.BENCHMARK_OUTPUT_DIR }}/ci_cd_summary.txt';
+          let summaryContent = 'Benchmark results not available';
+          
+          try {
+            if (fs.existsSync(summaryPath)) {
+              summaryContent = fs.readFileSync(summaryPath, 'utf8');
+            }
+          } catch (error) {
+            console.log('Error reading summary:', error);
+          }
+          
+          // Find latest results file for detailed metrics
+          let metricsContent = '';
+          try {
+            const resultsDir = '${{ env.BENCHMARK_OUTPUT_DIR }}';
+            const files = fs.readdirSync(resultsDir);
+            const resultsFile = files.find(f => f.startsWith('benchmark_results_') && f.endsWith('.json'));
+            
+            if (resultsFile) {
+              const resultsPath = path.join(resultsDir, resultsFile);
+              const results = JSON.parse(fs.readFileSync(resultsPath, 'utf8'));
+              
+              // Extract key metrics
+              if (results.comparative_analysis && results.comparative_analysis.overall_ranking) {
+                const topModels = results.comparative_analysis.overall_ranking.slice(0, 3);
+                metricsContent = '\n## 🏆 Top Performing Models\n\n';
+                topModels.forEach((model, index) => {
+                  metricsContent += `${index + 1}. **${model.model_name}**: ${model.overall_score.toFixed(3)}\n`;
+                });
+              }
+              
+              // Add training performance
+              if (results.training_benchmarks) {
+                metricsContent += '\n## ⏱️ Training Performance\n\n';
+                results.training_benchmarks.forEach(benchmark => {
+                  metricsContent += `- **${benchmark.model_name}**: ${benchmark.training_time.toFixed(2)}s\n`;
+                });
+              }
+            }
+          } catch (error) {
+            console.log('Error processing results:', error);
+          }
+          
+          const regressionStatus = '${{ steps.regression_check.outputs.regression_detected }}' === 'true' ? '🚨' : '✅';
+          const violationStatus = '${{ steps.regression_check.outputs.violations_detected }}' === 'true' ? '⚠️' : '✅';
+          
+          const comment = `## 📊 Performance Benchmark Results
+          
+          **Status**: ${regressionStatus} Regressions | ${violationStatus} Thresholds
+          
+          **Commit**: \`${context.sha.substring(0, 8)}\`
+          **Branch**: \`${context.ref.replace('refs/heads/', '')}\`
+          
+          ### Summary
+          \`\`\`
+          ${summaryContent}
+          \`\`\`
+          
+          ${metricsContent}
+          
+          **Artifacts**: [View detailed results](https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }})
+          
+          <details>
+          <summary>📈 View Performance Visualizations</summary>
+          
+          Performance dashboards and detailed analysis are available in the workflow artifacts.
+          
+          </details>`;
+          
+          github.rest.issues.createComment({
+            issue_number: context.issue.number,
+            owner: context.repo.owner,
+            repo: context.repo.repo,
+            body: comment
+          });
+    
+    - name: Fail on performance regressions
+      if: steps.regression_check.outputs.regression_detected == 'true' && github.event_name == 'pull_request'
+      run: |
+        echo "❌ Performance regressions detected! Failing the build."
+        echo "Please investigate and fix the performance issues before merging."
+        exit 1
+    
+    - name: Post Slack notification
+      if: always() && (steps.regression_check.outputs.regression_detected == 'true' || failure())
+      uses: 8398a7/action-slack@v3
+      with:
+        status: ${{ job.status }}
+        custom_payload: |
+          {
+            "text": "Fraud Detection Benchmark Alert",
+            "attachments": [{
+              "color": "${{ job.status == 'success' && steps.regression_check.outputs.regression_detected == 'false' ? 'good' : 'danger' }}",
+              "fields": [{
+                "title": "Repository",
+                "value": "${{ github.repository }}",
+                "short": true
+              }, {
+                "title": "Branch",
+                "value": "${{ github.ref_name }}",
+                "short": true
+              }, {
+                "title": "Commit",
+                "value": "${{ github.sha }}".substring(0, 8),
+                "short": true
+              }, {
+                "title": "Status",
+                "value": "${{ job.status }}",
+                "short": true
+              }, {
+                "title": "Regressions",
+                "value": "${{ steps.regression_check.outputs.regression_detected }}",
+                "short": true
+              }, {
+                "title": "Violations", 
+                "value": "${{ steps.regression_check.outputs.violations_detected }}",
+                "short": true
+              }]
+            }]
+          }
+      env:
+        SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+
+  # Separate job for scheduled full benchmarks
+  scheduled_full_benchmark:
+    if: github.event_name == 'schedule'
+    runs-on: ubuntu-latest
+    timeout-minutes: 240
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+    
+    - name: Set up Python
+      uses: actions/setup-python@v4
+      with:
+        python-version: '3.9'
+    
+    - name: Install dependencies
+      run: |
+        python -m pip install --upgrade pip
+        pip install -r requirements.txt
+        pip install schedule pyyaml requests
+    
+    - name: Create larger test dataset
+      run: |
+        python run_benchmark.py create-data --data scheduled_data.csv --size 50000
+    
+    - name: Run full automated benchmark
+      run: |
+        python run_benchmark.py auto --config benchmark_config.yaml --data scheduled_data.csv --verbose
+    
+    - name: Archive results
+      uses: actions/upload-artifact@v3
+      with:
+        name: scheduled-benchmark-${{ github.run_number }}
+        path: |
+          benchmark_results/
+          benchmark_visualizations/
+        retention-days: 90

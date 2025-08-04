@@ -1,8 +1,9 @@
-# Core Data Science Libraries
+# Core Data Science Libraries (with optimized versions)
 pandas>=1.5.0
 numpy>=1.21.0
 scikit-learn>=1.1.0
 scipy>=1.9.0
+# pandas[performance]>=1.5.0     # Performance extras for pandas
 
 # Machine Learning Models
 xgboost>=1.6.0
@@ -15,6 +16,9 @@ matplotlib>=3.5.0
 seaborn>=0.11.0
 plotly>=5.10.0
 kaleido>=0.2.1
+dash>=2.6.0
+dash-bootstrap-components>=1.2.0
+plotly-express>=0.4.1
 
 # Web API & Services
 fastapi>=0.85.0
@@ -30,8 +34,54 @@ python-dateutil>=2.8.0
 pytest>=7.1.0
 jupyter>=1.0.0
 ipykernel>=6.15.0
+nbformat>=5.4.0
+ipywidgets>=8.0.0
+
+# System Monitoring & Performance
+psutil>=5.9.0
 
 # Optional: Database & Deployment
 # sqlalchemy>=1.4.0
 # redis>=4.3.0
 # docker>=6.0.0
+
+# Enhanced Dependencies for Visualization System
+# Real-time dashboard components
+dash-core-components>=2.0.0
+dash-html-components>=2.0.0
+dash-table>=5.0.0
+
+# Business Intelligence & Analytics
+statsmodels>=0.13.0
+tslearn>=0.5.2  # Time series analysis
+
+# Enhanced Visualization
+bokeh>=2.4.0  # Alternative visualization library
+altair>=4.2.0  # Grammar of graphics
+holoviews>=1.15.0  # High-level data visualization
+
+# Configuration and Data Management
+pyyaml>=6.0  # YAML configuration files
+toml>=0.10.2  # TOML configuration files
+configparser>=5.3.0  # INI file parsing
+
+# Performance Optimization Dependencies
+optuna>=3.0.0                    # Hyperparameter optimization
+numba>=0.56.0                    # JIT compilation for speed
+# cupy>=11.0.0                   # GPU acceleration (optional)
+# ray>=2.0.0                     # Distributed computing (optional)
+memory-profiler>=0.60.0          # Memory profiling
+line-profiler>=4.0.0             # Line-by-line profiling
+cython>=0.29.0                   # C extensions for speed
+
+# Additional ML libraries for ensemble methods
+votingclassifier>=0.1.0          # Advanced ensemble methods
+# hyperopt>=0.2.7                # Alternative hyperparameter optimization
+
+# Monitoring and logging
+rich>=12.0.0                     # Beautiful terminal output
+tqdm>=4.64.0                     # Progress bars (already included)
+
+# Optional: Advanced optimization
+# intel-extension-for-sklearn     # Intel optimizations
+# scikit-learn-intelex           # Intel optimizations

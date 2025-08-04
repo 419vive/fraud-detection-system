@@ -9,16 +9,34 @@ from typing import Dict, List, Tuple, Any, Optional
 import logging
 from datetime import datetime
 import json
+import matplotlib.pyplot as plt
+import seaborn as sns
+import plotly.graph_objects as go
+import plotly.express as px
+from plotly.subplots import make_subplots
+import plotly.offline as pyo
+from scipy import stats
+import warnings
+warnings.filterwarnings('ignore')
+
+from .config import get_config
+from .exceptions import DataValidationError, handle_exception
 
 logger = logging.getLogger(__name__)
 
 class DataValidator:
     """數據驗證器類別"""
     
-    def __init__(self):
+    def __init__(self, config_manager=None):
         self.validation_rules = {}
         self.validation_results = {}
         self.data_profile = {}
+        self.config = config_manager or get_config()
+        
+        # 設置可視化樣式
+        plt.style.use('default')
+        sns.set_palette('husl')
+        plt.rcParams['figure.figsize'] = (12, 8)
         
     def validate_data_structure(self, df: pd.DataFrame, expected_columns: List[str] = None) -> Dict[str, Any]:
         """驗證數據結構"""
@@ -409,6 +427,380 @@ class DataValidator:
             logger.info(f"驗證報告已保存至: {output_path}")
         
         return final_report
+    
+    def create_data_quality_dashboard(self, df: pd.DataFrame, output_path: str = None) -> str:
+        """創建數據品質視覺化儀表板"""
+        logger.info("生成數據品質視覺化儀表板...")
+        
+        # 執行驗證
+        structure_results = self.validate_data_structure(df)
+        quality_results = self.validate_data_quality(df)
+        
+        # 創建子圖
+        fig = make_subplots(
+            rows=3, cols=2,
+            subplot_titles=[
+                '缺失值分佈', '數據類型分佈',
+                '數值特徵分佈', '重複值分析',
+                '數據完整性', '品質分數'
+            ],
+            specs=[[{"type": "bar"}, {"type": "pie"}],
+                   [{"type": "histogram"}, {"type": "bar"}],
+                   [{"type": "bar"}, {"type": "indicator"}]]
+        )
+        
+        # 1. 缺失值分佈
+        missing_data = quality_results['missing_values']['percentages']
+        top_missing = dict(sorted(missing_data.items(), key=lambda x: x[1], reverse=True)[:10])
+        
+        fig.add_trace(
+            go.Bar(x=list(top_missing.keys()), y=list(top_missing.values()),
+                   name="缺失百分比", marker_color='lightcoral'),
+            row=1, col=1
+        )
+        
+        # 2. 數據類型分佈
+        dtype_counts = df.dtypes.value_counts()
+        fig.add_trace(
+            go.Pie(labels=dtype_counts.index.astype(str), values=dtype_counts.values,
+                   name="數據類型"),
+            row=1, col=2
+        )
+        
+        # 3. 數值特徵分佈（選擇前5個數值特徵）
+        numeric_cols = df.select_dtypes(include=[np.number]).columns[:5]
+        for i, col in enumerate(numeric_cols):
+            fig.add_trace(
+                go.Histogram(x=df[col].dropna(), name=col, opacity=0.7),
+                row=2, col=1
+            )
+        
+        # 4. 重複值分析
+        duplicate_info = {
+            '重複行': quality_results['duplicate_rows'],
+            '唯一行': len(df) - quality_results['duplicate_rows']
+        }
+        fig.add_trace(
+            go.Bar(x=list(duplicate_info.keys()), y=list(duplicate_info.values()),
+                   marker_color=['red', 'green']),
+            row=2, col=2
+        )
+        
+        # 5. 數據完整性
+        completeness_by_col = []
+        completeness_vals = []
+        for col in df.columns[:10]:  # 只顯示前10列
+            completeness = (1 - df[col].isnull().sum() / len(df)) * 100
+            completeness_by_col.append(col)
+            completeness_vals.append(completeness)
+        
+        fig.add_trace(
+            go.Bar(x=completeness_by_col, y=completeness_vals,
+                   marker_color='lightblue'),
+            row=3, col=1
+        )
+        
+        # 6. 品質分數指示器
+        fig.add_trace(
+            go.Indicator(
+                mode="gauge+number+delta",
+                value=quality_results['quality_score'],
+                domain={'x': [0, 1], 'y': [0, 1]},
+                title={'text': "數據品質分數"},
+                delta={'reference': 80},
+                gauge={
+                    'axis': {'range': [None, 100]},
+                    'bar': {'color': "darkblue"},
+                    'steps': [
+                        {'range': [0, 50], 'color': "lightgray"},
+                        {'range': [50, 80], 'color': "yellow"},
+                        {'range': [80, 100], 'color': "green"}
+                    ],
+                    'threshold': {
+                        'line': {'color': "red", 'width': 4},
+                        'thickness': 0.75,
+                        'value': 90
+                    }
+                }
+            ),
+            row=3, col=2
+        )
+        
+        # 更新布局
+        fig.update_layout(
+            height=1000,
+            title_text="數據品質儀表板",
+            showlegend=False
+        )
+        
+        # 保存或顯示
+        if output_path:
+            fig.write_html(output_path)
+            logger.info(f"數據品質儀表板已保存至: {output_path}")
+            return output_path
+        else:
+            fig.show()
+            return "dashboard_displayed"
+    
+    def plot_missing_value_patterns(self, df: pd.DataFrame, top_n: int = 20):
+        """繪製缺失值模式圖"""
+        missing_data = df.isnull().sum().sort_values(ascending=False)[:top_n]
+        missing_percent = (missing_data / len(df)) * 100
+        
+        fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(16, 6))
+        
+        # 缺失值數量
+        missing_data.plot(kind='barh', ax=ax1, color='coral')
+        ax1.set_title('缺失值數量 Top 20')
+        ax1.set_xlabel('缺失值數量')
+        
+        # 缺失值百分比
+        missing_percent.plot(kind='barh', ax=ax2, color='lightblue')
+        ax2.set_title('缺失值百分比 Top 20')
+        ax2.set_xlabel('缺失百分比 (%)')
+        
+        plt.tight_layout()
+        plt.show()
+        
+        # 缺失值熱力圖
+        if len(df.columns) <= 50:  # 只有在列數不太多時才顯示熱力圖
+            plt.figure(figsize=(12, 8))
+            sns.heatmap(df.isnull(), yticklabels=False, cbar=True, cmap='viridis')
+            plt.title('缺失值模式熱力圖')
+            plt.show()
+    
+    def plot_correlation_analysis(self, df: pd.DataFrame, target_col: str = 'isFraud'):
+        """繪製相關性分析圖"""
+        numeric_df = df.select_dtypes(include=[np.number])
+        
+        if len(numeric_df.columns) > 1:
+            # 相關性矩陣
+            corr_matrix = numeric_df.corr()
+            
+            plt.figure(figsize=(12, 10))
+            mask = np.triu(np.ones_like(corr_matrix, dtype=bool))
+            sns.heatmap(corr_matrix, mask=mask, annot=False, cmap='coolwarm', center=0)
+            plt.title('特徵相關性矩陣')
+            plt.tight_layout()
+            plt.show()
+            
+            # 與目標變數的相關性
+            if target_col in numeric_df.columns:
+                target_corr = numeric_df.corrwith(numeric_df[target_col]).abs().sort_values(ascending=False)[1:21]
+                
+                plt.figure(figsize=(10, 8))
+                target_corr.plot(kind='barh', color='green', alpha=0.7)
+                plt.title(f'與 {target_col} 的相關性 (Top 20)')
+                plt.xlabel('絕對相關係數')
+                plt.tight_layout()
+                plt.show()
+    
+    def plot_distribution_analysis(self, df: pd.DataFrame, target_col: str = 'isFraud', max_features: int = 12):
+        """繪製分佈分析圖"""
+        numeric_cols = df.select_dtypes(include=[np.number]).columns
+        numeric_cols = [col for col in numeric_cols if col != target_col][:max_features]
+        
+        if len(numeric_cols) == 0:
+            logger.warning("沒有數值型特徵用於分佈分析")
+            return
+        
+        # 計算子圖布局
+        n_cols = 3
+        n_rows = (len(numeric_cols) + n_cols - 1) // n_cols
+        
+        fig, axes = plt.subplots(n_rows, n_cols, figsize=(15, 5*n_rows))
+        axes = axes.flatten() if n_rows > 1 else [axes] if n_rows == 1 else axes
+        
+        for i, col in enumerate(numeric_cols):
+            if i >= len(axes):
+                break
+                
+            ax = axes[i]
+            
+            # 繪製分佈圖
+            if target_col in df.columns:
+                # 按目標變數分組繪製
+                for target_val in df[target_col].unique():
+                    subset = df[df[target_col] == target_val][col].dropna()
+                    if len(subset) > 0:
+                        ax.hist(subset, alpha=0.6, label=f'{target_col}={target_val}', bins=30)
+            else:
+                ax.hist(df[col].dropna(), alpha=0.7, bins=30)
+            
+            ax.set_title(f'{col} 分佈')
+            ax.set_xlabel(col)
+            ax.set_ylabel('頻率')
+            ax.legend()
+            ax.grid(True, alpha=0.3)
+        
+        # 隱藏多餘的子圖
+        for i in range(len(numeric_cols), len(axes)):
+            axes[i].set_visible(False)
+        
+        plt.tight_layout()
+        plt.show()
+    
+    def plot_outlier_analysis(self, df: pd.DataFrame, max_features: int = 9):
+        """繪製異常值分析圖"""
+        numeric_cols = df.select_dtypes(include=[np.number]).columns[:max_features]
+        
+        if len(numeric_cols) == 0:
+            logger.warning("沒有數值型特徵用於異常值分析")
+            return
+        
+        # 計算子圖布局
+        n_cols = 3
+        n_rows = (len(numeric_cols) + n_cols - 1) // n_cols
+        
+        fig, axes = plt.subplots(n_rows, n_cols, figsize=(15, 5*n_rows))
+        axes = axes.flatten() if n_rows > 1 else [axes] if n_rows == 1 else axes
+        
+        for i, col in enumerate(numeric_cols):
+            if i >= len(axes):
+                break
+                
+            ax = axes[i]
+            
+            # 箱線圖檢測異常值
+            df[col].dropna().plot(kind='box', ax=ax)
+            ax.set_title(f'{col} 異常值檢測')
+            ax.set_ylabel(col)
+        
+        # 隱藏多餘的子圖
+        for i in range(len(numeric_cols), len(axes)):
+            axes[i].set_visible(False)
+        
+        plt.tight_layout()
+        plt.show()
+    
+    def create_interactive_data_profile(self, df: pd.DataFrame, output_path: str = None):
+        """創建交互式數據概覽"""
+        # 基本統計信息
+        basic_stats = {
+            'total_rows': len(df),
+            'total_columns': len(df.columns),
+            'memory_usage_mb': df.memory_usage(deep=True).sum() / (1024*1024),
+            'duplicate_rows': df.duplicated().sum()
+        }
+        
+        # 按數據類型分組
+        dtype_info = {}
+        for dtype in df.dtypes.unique():
+            cols_of_type = df.select_dtypes(include=[dtype]).columns.tolist()
+            dtype_info[str(dtype)] = {
+                'count': len(cols_of_type),
+                'columns': cols_of_type[:10]  # 只顯示前10個
+            }
+        
+        # 缺失值統計
+        missing_stats = {}
+        missing_counts = df.isnull().sum()
+        for col in missing_counts[missing_counts > 0].index:
+            missing_stats[col] = {
+                'count': int(missing_counts[col]),
+                'percentage': float(missing_counts[col] / len(df) * 100)
+            }
+        
+        # 數值型特徵統計
+        numeric_stats = {}
+        numeric_cols = df.select_dtypes(include=[np.number]).columns
+        for col in numeric_cols:
+            if df[col].notna().sum() > 0:
+                numeric_stats[col] = {
+                    'mean': float(df[col].mean()),
+                    'std': float(df[col].std()),
+                    'min': float(df[col].min()),
+                    'max': float(df[col].max()),
+                    'unique_count': int(df[col].nunique())
+                }
+        
+        # 類別型特徵統計
+        categorical_stats = {}
+        categorical_cols = df.select_dtypes(include=['object', 'category']).columns
+        for col in categorical_cols:
+            categorical_stats[col] = {
+                'unique_count': int(df[col].nunique()),
+                'most_frequent': str(df[col].mode().iloc[0]) if len(df[col].mode()) > 0 else 'N/A',
+                'top_values': df[col].value_counts().head(5).to_dict()
+            }
+        
+        # 組合所有信息
+        data_profile = {
+            'generated_at': datetime.now().isoformat(),
+            'basic_statistics': basic_stats,
+            'data_types': dtype_info,
+            'missing_values': missing_stats,
+            'numeric_features': numeric_stats,
+            'categorical_features': categorical_stats
+        }
+        
+        if output_path:
+            with open(output_path, 'w', encoding='utf-8') as f:
+                json.dump(data_profile, f, ensure_ascii=False, indent=2)
+            logger.info(f"數據概覽已保存至: {output_path}")
+        
+        return data_profile
+    
+    def comprehensive_data_validation_report(self, df: pd.DataFrame, 
+                                           target_col: str = 'isFraud',
+                                           output_dir: str = 'validation_reports') -> Dict[str, str]:
+        """生成綜合數據驗證報告"""
+        import os
+        os.makedirs(output_dir, exist_ok=True)
+        
+        logger.info("生成綜合數據驗證報告...")
+        
+        # 1. 基本驗證報告
+        text_report_path = os.path.join(output_dir, 'data_validation_report.md')
+        self.generate_validation_report(df, text_report_path)
+        
+        # 2. 視覺化儀表板
+        dashboard_path = os.path.join(output_dir, 'data_quality_dashboard.html')
+        self.create_data_quality_dashboard(df, dashboard_path)
+        
+        # 3. 數據概覽JSON
+        profile_path = os.path.join(output_dir, 'data_profile.json')
+        self.create_interactive_data_profile(df, profile_path)
+        
+        # 4. 生成視覺化圖表
+        logger.info("生成視覺化分析圖...")
+        
+        # 缺失值分析
+        plt.ioff()  # 關閉交互模式以避免顯示圖表
+        self.plot_missing_value_patterns(df)
+        plt.savefig(os.path.join(output_dir, 'missing_value_analysis.png'), dpi=300, bbox_inches='tight')
+        plt.close('all')
+        
+        # 相關性分析
+        if target_col in df.columns:
+            self.plot_correlation_analysis(df, target_col)
+            plt.savefig(os.path.join(output_dir, 'correlation_analysis.png'), dpi=300, bbox_inches='tight')
+            plt.close('all')
+        
+        # 分佈分析
+        self.plot_distribution_analysis(df, target_col)
+        plt.savefig(os.path.join(output_dir, 'distribution_analysis.png'), dpi=300, bbox_inches='tight')
+        plt.close('all')
+        
+        # 異常值分析
+        self.plot_outlier_analysis(df)
+        plt.savefig(os.path.join(output_dir, 'outlier_analysis.png'), dpi=300, bbox_inches='tight')
+        plt.close('all')
+        
+        plt.ion()  # 重新開啟交互模式
+        
+        report_files = {
+            'text_report': text_report_path,
+            'dashboard': dashboard_path,
+            'data_profile': profile_path,
+            'missing_analysis': os.path.join(output_dir, 'missing_value_analysis.png'),
+            'correlation_analysis': os.path.join(output_dir, 'correlation_analysis.png'),
+            'distribution_analysis': os.path.join(output_dir, 'distribution_analysis.png'),
+            'outlier_analysis': os.path.join(output_dir, 'outlier_analysis.png')
+        }
+        
+        logger.info(f"綜合驗證報告已生成，文件保存在: {output_dir}")
+        return report_files
 
 def validate_fraud_detection_data(df: pd.DataFrame) -> Dict[str, Any]:
     """便捷函數：驗證詐騙檢測數據"""
